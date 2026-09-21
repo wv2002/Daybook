@@ -194,6 +194,22 @@
     margin-top: 8px;
     height: 14px;
   }
+  #todayBtn {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--accent);
+    color: var(--accent-text);
+    border: none;
+    border-radius: 24px;
+    padding: 12px 20px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+    z-index: 10;
+  }
 </style>
 </head>
 <body>
@@ -240,6 +256,8 @@
       </div>
     </div>
   </div>
+
+  <button id="todayBtn">Hoje</button>
 </div>
 
 <script>
@@ -273,7 +291,7 @@ tabs.forEach(t => t.onclick = async () => {
   currentMode = t.dataset.mode;
   document.getElementById('dayView').style.display = currentMode === 'day' ? 'block' : 'none';
   document.getElementById('weekView').style.display = currentMode === 'week' ? 'block' : 'none';
-  await renderCalendar();
+  drawCalendar();
 });
 
 // ===== HELPERS =====
@@ -311,6 +329,9 @@ const ordinal = n => `${n}ª`;
 let viewDate = new Date();
 let selectedDate = new Date();
 let monthEntries = new Set();
+const monthCache = {};   // monthKey -> Set of day keys with entries
+const dayCache = {};     // dayKey -> text
+const weekCache = {};    // weekKey -> text
 
 // ===== API =====
 async function apiGet(action, params) {
@@ -341,17 +362,27 @@ async function apiSave(type, key, text) {
   }
 }
 
+async function ensureMonthLoaded(mk) {
+  if (!monthCache[mk]) {
+    const res = await apiGet('getMonth', { month: mk });
+    monthCache[mk] = new Set(res.keys || []);
+  }
+  return monthCache[mk];
+}
+
 // ===== CALENDAR =====
 document.getElementById('weekdays').innerHTML = weekdayNames.map(w => `<div class="weekday">${w}</div>`).join('');
 
 async function renderCalendar() {
+  const mk = monthKey(viewDate);
+  monthEntries = await ensureMonthLoaded(mk);
+  drawCalendar();
+}
+
+function drawCalendar() {
   document.getElementById('monthLabel').textContent = `${monthNames[viewDate.getMonth()]} ${viewDate.getFullYear()}`;
   const grid = document.getElementById('calendarGrid');
   grid.innerHTML = '';
-
-  const mk = monthKey(viewDate);
-  const res = await apiGet('getMonth', { month: mk });
-  monthEntries = new Set(res.keys || []);
 
   const firstDay = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1);
   const startOffset = firstDay.getDay();
@@ -383,18 +414,43 @@ async function renderCalendar() {
       selectedDate = new Date(y, m-1, dd);
       if (currentMode === 'day') {
         await flushDay();
+        drawCalendar();
         await loadDay();
       } else {
         await flushWeek();
+        drawCalendar();
         await loadWeek();
       }
-      await renderCalendar();
     };
   });
 }
 
-document.getElementById('prevMonth').onclick = () => { viewDate.setMonth(viewDate.getMonth()-1); renderCalendar(); };
-document.getElementById('nextMonth').onclick = () => { viewDate.setMonth(viewDate.getMonth()+1); renderCalendar(); };
+document.getElementById('prevMonth').onclick = async () => {
+  await flushDay(); await flushWeek();
+  viewDate.setMonth(viewDate.getMonth()-1);
+  await renderCalendar();
+};
+document.getElementById('nextMonth').onclick = async () => {
+  await flushDay(); await flushWeek();
+  viewDate.setMonth(viewDate.getMonth()+1);
+  await renderCalendar();
+};
+
+document.getElementById('todayBtn').onclick = async () => {
+  const now = new Date();
+  selectedDate = now;
+  const monthChanged = monthKey(viewDate) !== monthKey(now);
+  viewDate = new Date(now.getFullYear(), now.getMonth(), 1);
+  if (currentMode === 'day') {
+    await flushDay();
+    if (monthChanged) await renderCalendar(); else drawCalendar();
+    await loadDay();
+  } else {
+    await flushWeek();
+    if (monthChanged) await renderCalendar(); else drawCalendar();
+    await loadWeek();
+  }
+};
 
 // ===== DAY ENTRY =====
 const dayText = document.getElementById('dayText');
@@ -408,6 +464,7 @@ async function flushDay() {
     clearTimeout(dayTimer);
     dayStatus.textContent = 'salvando...';
     await apiSave('day', currentDayKey, dayText.value);
+    dayCache[currentDayKey] = dayText.value;
     monthEntries.add(currentDayKey);
     dayDirty = false;
   }
@@ -416,11 +473,22 @@ async function flushDay() {
 async function loadDay() {
   currentDayKey = dateKey(selectedDate);
   document.getElementById('dayLabel').textContent = selectedDate.toLocaleDateString('pt-BR', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
+
+  if (dayCache.hasOwnProperty(currentDayKey)) {
+    dayText.value = dayCache[currentDayKey];
+    dayDirty = false;
+    dayStatus.textContent = '';
+    return;
+  }
+  dayText.value = '';
   dayStatus.textContent = 'carregando...';
   const res = await apiGet('getDay', { key: currentDayKey });
-  dayText.value = res.text || '';
-  dayDirty = false;
-  dayStatus.textContent = '';
+  dayCache[currentDayKey] = res.text || '';
+  // evita sobrescrever se o usuário já trocou de dia enquanto carregava
+  if (currentDayKey === dateKey(selectedDate)) {
+    dayText.value = dayCache[currentDayKey];
+    dayStatus.textContent = '';
+  }
 }
 dayText.addEventListener('input', () => {
   dayDirty = true;
@@ -428,6 +496,7 @@ dayText.addEventListener('input', () => {
   clearTimeout(dayTimer);
   dayTimer = setTimeout(async () => {
     await apiSave('day', currentDayKey, dayText.value);
+    dayCache[currentDayKey] = dayText.value;
     monthEntries.add(currentDayKey);
     dayDirty = false;
     dayStatus.textContent = 'salvo ✓';
@@ -447,6 +516,7 @@ async function flushWeek() {
     clearTimeout(weekTimer);
     weekStatus.textContent = 'salvando...';
     await apiSave('week', currentWeekKey, weekText.value);
+    weekCache[currentWeekKey] = weekText.value;
     weekDirty = false;
   }
 }
@@ -456,9 +526,21 @@ async function loadWeek() {
   currentWeekKey = info.key;
   document.getElementById('weekLabelMonth').textContent = `${ordinal(info.weekOfMonth)} semana de ${monthNames[info.month]} de ${info.year}`;
   document.getElementById('weekLabelYear').textContent = `${ordinal(info.weekOfYear)} semana de ${info.year}`;
+
+  if (weekCache.hasOwnProperty(currentWeekKey)) {
+    weekText.value = weekCache[currentWeekKey];
+    weekDirty = false;
+    weekStatus.textContent = '';
+    return;
+  }
+  weekText.value = '';
+  weekStatus.textContent = 'carregando...';
   const res = await apiGet('getWeek', { key: currentWeekKey });
-  weekText.value = res.text || '';
-  weekDirty = false;
+  weekCache[currentWeekKey] = res.text || '';
+  if (currentWeekKey === weekInfo(selectedDate).key) {
+    weekText.value = weekCache[currentWeekKey];
+    weekStatus.textContent = '';
+  }
 }
 weekText.addEventListener('input', () => {
   weekDirty = true;
@@ -466,6 +548,7 @@ weekText.addEventListener('input', () => {
   clearTimeout(weekTimer);
   weekTimer = setTimeout(async () => {
     await apiSave('week', currentWeekKey, weekText.value);
+    weekCache[currentWeekKey] = weekText.value;
     weekDirty = false;
     weekStatus.textContent = 'salvo ✓';
     setTimeout(()=> weekStatus.textContent='', 1500);
