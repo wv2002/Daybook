@@ -344,17 +344,22 @@ async function apiGet(action, params) {
     return await res.json();
   } catch (err) {
     console.error('apiGet falhou', err);
-    return {};
+    return { error: 'rede' };
   }
 }
 async function apiSave(type, key, text) {
   try {
-    await fetch(API_URL, {
+    const res = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ type, key, text, auth: AUTH_KEY }),
       keepalive: true
     });
+    if (!res.ok) return false;
+    try {
+      const j = await res.json();
+      if (j && j.error) { console.error('apiSave erro do servidor', j.error); return false; }
+    } catch (e) { /* resposta não-JSON: considera ok se HTTP ok */ }
     return true;
   } catch (err) {
     console.error('apiSave falhou', err);
@@ -463,7 +468,8 @@ async function flushDay() {
   if (dayDirty && currentDayKey) {
     clearTimeout(dayTimer);
     dayStatus.textContent = 'salvando...';
-    await apiSave('day', currentDayKey, dayText.value);
+    const ok = await apiSave('day', currentDayKey, dayText.value);
+    if (!ok) { dayStatus.textContent = '⚠ erro ao salvar'; return; }
     dayCache[currentDayKey] = dayText.value;
     monthEntries.add(currentDayKey);
     dayDirty = false;
@@ -475,27 +481,34 @@ async function loadDay() {
   document.getElementById('dayLabel').textContent = selectedDate.toLocaleDateString('pt-BR', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
 
   if (dayCache.hasOwnProperty(currentDayKey)) {
+    dayText.readOnly = false;
     dayText.value = dayCache[currentDayKey];
     dayDirty = false;
     dayStatus.textContent = '';
     return;
   }
   dayText.value = '';
+  dayText.readOnly = true; // bloqueia digitação até carregar, pra não sobrescrever o que já existe
   dayStatus.textContent = 'carregando...';
-  const res = await apiGet('getDay', { key: currentDayKey });
-  dayCache[currentDayKey] = res.text || '';
-  // evita sobrescrever se o usuário já trocou de dia enquanto carregava
-  if (currentDayKey === dateKey(selectedDate)) {
-    dayText.value = dayCache[currentDayKey];
-    dayStatus.textContent = '';
+  const keyAtStart = currentDayKey;
+  const res = await apiGet('getDay', { key: keyAtStart });
+  if (keyAtStart !== currentDayKey) return; // usuário já trocou de dia
+  if (res.error) {
+    dayStatus.textContent = '⚠ não consegui carregar — recarregue a página';
+    return; // NÃO guarda vazio no cache
   }
+  dayCache[keyAtStart] = res.text || '';
+  dayText.value = dayCache[keyAtStart];
+  dayText.readOnly = false;
+  dayStatus.textContent = '';
 }
 dayText.addEventListener('input', () => {
   dayDirty = true;
   dayStatus.textContent = 'digitando...';
   clearTimeout(dayTimer);
   dayTimer = setTimeout(async () => {
-    await apiSave('day', currentDayKey, dayText.value);
+    const ok = await apiSave('day', currentDayKey, dayText.value);
+    if (!ok) { dayStatus.textContent = '⚠ erro ao salvar — tentando de novo ao digitar'; return; }
     dayCache[currentDayKey] = dayText.value;
     monthEntries.add(currentDayKey);
     dayDirty = false;
@@ -515,7 +528,8 @@ async function flushWeek() {
   if (weekDirty && currentWeekKey) {
     clearTimeout(weekTimer);
     weekStatus.textContent = 'salvando...';
-    await apiSave('week', currentWeekKey, weekText.value);
+    const ok = await apiSave('week', currentWeekKey, weekText.value);
+    if (!ok) { weekStatus.textContent = '⚠ erro ao salvar'; return; }
     weekCache[currentWeekKey] = weekText.value;
     weekDirty = false;
   }
@@ -528,26 +542,34 @@ async function loadWeek() {
   document.getElementById('weekLabelYear').textContent = `${ordinal(info.weekOfYear)} semana de ${info.year}`;
 
   if (weekCache.hasOwnProperty(currentWeekKey)) {
+    weekText.readOnly = false;
     weekText.value = weekCache[currentWeekKey];
     weekDirty = false;
     weekStatus.textContent = '';
     return;
   }
   weekText.value = '';
+  weekText.readOnly = true;
   weekStatus.textContent = 'carregando...';
-  const res = await apiGet('getWeek', { key: currentWeekKey });
-  weekCache[currentWeekKey] = res.text || '';
-  if (currentWeekKey === weekInfo(selectedDate).key) {
-    weekText.value = weekCache[currentWeekKey];
-    weekStatus.textContent = '';
+  const keyAtStart = currentWeekKey;
+  const res = await apiGet('getWeek', { key: keyAtStart });
+  if (keyAtStart !== currentWeekKey) return;
+  if (res.error) {
+    weekStatus.textContent = '⚠ não consegui carregar — recarregue a página';
+    return;
   }
+  weekCache[keyAtStart] = res.text || '';
+  weekText.value = weekCache[keyAtStart];
+  weekText.readOnly = false;
+  weekStatus.textContent = '';
 }
 weekText.addEventListener('input', () => {
   weekDirty = true;
   weekStatus.textContent = 'digitando...';
   clearTimeout(weekTimer);
   weekTimer = setTimeout(async () => {
-    await apiSave('week', currentWeekKey, weekText.value);
+    const ok = await apiSave('week', currentWeekKey, weekText.value);
+    if (!ok) { weekStatus.textContent = '⚠ erro ao salvar — tentando de novo ao digitar'; return; }
     weekCache[currentWeekKey] = weekText.value;
     weekDirty = false;
     weekStatus.textContent = 'salvo ✓';
